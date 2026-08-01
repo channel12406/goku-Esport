@@ -1,0 +1,247 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FireArena — Règles de sécurité Firestore
+//
+// PRINCIPE : tout écrit sur l'argent (PXP) et les données sensibles passe par
+// les fonctions serveur. Le serveur se connecte avec un compte "robot" dédié
+// (email ci-dessous) ; SEUL ce robot peut écrire sur ces collections.
+// Le client ne peut JAMAIS écrire directement de PXP, de profil, de tournoi…
+//
+// ⚠️ IMPORTANT : L'email du robot ci-dessous DOIT correspondre à la variable
+//    FIREBASE_ROBOT_EMAIL dans le fichier .env
+//
+// ⚠️ AVANT DE DÉPLOYER :
+//    1. Configure le compte robot dans .env (FIREBASE_ROBOT_EMAIL / PASSWORD)
+//    2. Crée le compte robot dans Firebase Auth avec l'email spécifié
+//    3. Initialise le profil robot avec PXP (voir SECURITY_SETUP.md)
+//    4. Déploie les règles : firebase deploy --only firestore:rules
+//
+// Déploiement : firebase deploy --only firestore:rules
+// ─────────────────────────────────────────────────────────────────────────────
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Compte robot de service (DOIT correspondre à FIREBASE_ROBOT_EMAIL dans .env)
+    function isRobot() {
+      return request.auth != null && request.auth.token.email == 'robotfirearena@gmail.com';
+    }
+
+    // Admin : domaine email @firearena.gg OU UID listé (DOIT correspondre à ADMIN_UIDS dans .env)
+    function isAdmin() {
+      return request.auth != null && (
+        request.auth.token.email.matches('.*@firearena\\.gg$') ||
+        request.auth.uid in [
+          'mJHL1VSw0BTkOGhk9JQpPNJIeA92'
+          // Ajoute d'autres UIDs admin ici si nécessaire
+        ]
+      );
+    }
+
+    // Admin par domaine email
+    function isAdminEmail() {
+      return request.auth != null && request.auth.token.email.matches('.*@firearena\\.gg$');
+    }
+
+    function isAuthed() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return isAuthed() && request.auth.uid == uid;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // COLLECTIONS SENSIBLES (écriture robot uniquement)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    match /profiles/{uid} {
+      allow read: if true;
+      allow write: if isRobot() || isAdmin();
+    }
+
+    match /pxp_transactions/{txId} {
+      allow read: if isAuthed() && (resource.data.user_id == request.auth.uid || isAdmin() || isRobot());
+      allow write: if isRobot();
+    }
+
+    match /counters/{counterId} {
+      allow read: if true;
+      allow write: if isRobot();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // TOURNOIS
+    // ─────────────────────────────────────────────────────────────────────────
+
+    match /tournaments/{tournamentId} {
+      allow read: if true;
+      allow create: if isRobot() || isAdmin();
+      allow update: if isRobot() || isAdmin();
+      allow delete: if isRobot() || isAdmin();
+    }
+
+    match /tournament_registrations/{regId} {
+      allow read: if true;
+      allow write: if isRobot();
+    }
+
+    // Escrow : écritures par le robot uniquement (débit/crédit des frais)
+    match /tournament_fee_payments/{paymentId} {
+      allow read: if isAdmin() || isRobot();
+      allow write: if isRobot();
+    }
+
+    match /tournament_requests/{reqId} {
+      allow read: if isRobot() || isAdmin() || (isAuthed() && (resource.data.user_id == request.auth.uid || resource.data.organizer_id == request.auth.uid));
+      allow write: if isRobot();
+    }
+
+    match /tournament_matches/{matchId} {
+      allow read: if true;
+      allow write: if isRobot() || isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ÉQUIPES
+    // ─────────────────────────────────────────────────────────────────────────
+
+    match /teams/{teamId} {
+      allow read: if true;
+      allow create: if isRobot() || isAuthed();
+      allow update: if isRobot() || (isAuthed() && resource.data.captain_id == request.auth.uid);
+      allow delete: if isRobot() || isAdmin();
+    }
+
+    match /team_members/{memberId} {
+      allow read: if true;
+      allow write: if isRobot() || isAuthed();
+    }
+
+    match /team_invites/{inviteId} {
+      allow read: if isAuthed() && (resource.data.team_id == request.auth.uid || resource.data.user_id == request.auth.uid);
+      allow write: if isRobot() || isAuthed();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MODÉRATION
+    // ─────────────────────────────────────────────────────────────────────────
+
+    match /reports/{reportId} {
+      allow read: if isAuthed() && (resource.data.reporter_id == request.auth.uid || isAdmin());
+      allow create: if isAuthed();
+      allow write: if isRobot() || isAdmin();
+    }
+
+    match /moderation_logs/{logId} {
+      allow read: if isAdmin() || isRobot();
+      allow write: if isRobot();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CRÉATEURS
+    // ─────────────────────────────────────────────────────────────────────────
+
+    match /creator_requests/{reqId} {
+      allow read: if isAuthed() && (resource.data.user_id == request.auth.uid || isAdmin());
+      allow write: if isRobot() || isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // NEWS & BANNIÈRES
+    // ─────────────────────────────────────────────────────────────────────────
+
+    match /news/{articleId} {
+      allow read: if true;
+      allow write: if isRobot() || isAdmin();
+    }
+
+    match /banners/{bannerId} {
+      allow read: if true;
+      allow write: if isRobot() || isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // NOTIFICATIONS
+    // ─────────────────────────────────────────────────────────────────────────
+
+    match /notifications/{notifId} {
+      allow read: if isAuthed() && resource.data.user_id == request.auth.uid;
+      allow write: if isRobot();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // LIMITES (transferts, lucky wheel, etc.)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    match /transfer_limits/{limitId} {
+      allow read: if isRobot();
+      allow write: if isRobot();
+    }
+
+    match /spin_limits/{limitId} {
+      allow read: if isRobot();
+      allow write: if isRobot();
+    }
+
+    match /daily_rewards/{rewardId} {
+      allow read: if isRobot();
+      allow write: if isRobot();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ACHIEVEMENTS
+    // ─────────────────────────────────────────────────────────────────────────
+
+    match /achievements/{achId} {
+      allow read: if true;
+      allow write: if isRobot();
+    }
+
+    match /user_achievements/{userAchId} {
+      allow read: if isAuthed() && resource.data.user_id == request.auth.uid;
+      allow write: if isRobot();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // COLLECTIONS SUPPLÉMENTAIRES
+    // ─────────────────────────────────────────────────────────────────────────
+
+    match /matches/{id} {
+      allow read: if true;
+      allow write: if isRobot();
+    }
+
+    match /match_results/{id} {
+      allow read: if true;
+      allow write: if isRobot();
+    }
+
+    match /organizer_applications/{id} {
+      allow read: if isAuthed();
+      allow write: if isRobot();
+    }
+
+    match /seasons/{id} {
+      allow read: if true;
+      allow write: if isRobot();
+    }
+
+    match /login_streaks/{id} {
+      allow read: if true;
+      allow write: if isRobot();
+    }
+
+    match /team_join_requests/{id} {
+      allow read: if isAuthed();
+      allow write: if isRobot();
+    }
+
+    match /team_verifications/{id} {
+      allow read: if true;
+      allow create: if isAuthed();
+      allow write: if isRobot();
+    }
+  }
+}
